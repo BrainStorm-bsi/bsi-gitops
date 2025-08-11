@@ -1,0 +1,76 @@
+﻿name: Security Analysis
+
+on:
+  workflow_call:
+    inputs:
+      solution-path:
+        required: true
+        type: string
+        description: 'Path to the solution file relative to repository root'
+      scan-path:
+        required: false
+        type: string
+        description: 'Path to scan for vulnerabilities (defaults to solution directory)'
+      dotnet-version:
+        required: false
+        type: string
+        default: '9.0.x'
+        description: '.NET version to use'
+      languages:
+        required: false
+        type: string
+        default: 'csharp'
+        description: 'Languages for CodeQL analysis'
+
+concurrency:
+  group: security-analysis-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+  actions: read
+
+jobs:
+  security-scan:
+    name: Security Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Run CodeQL Analysis
+      uses: github/codeql-action/init@v3
+      with:
+        languages: ${{ inputs.languages }}
+        
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ inputs.dotnet-version }}
+        
+    - name: Build for CodeQL
+      run: |
+        dotnet restore ${{ inputs.solution-path }}
+        dotnet build ${{ inputs.solution-path }} --no-restore
+        
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3
+      
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: ${{ inputs.scan-path || inputs.solution-path }}
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+        
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'

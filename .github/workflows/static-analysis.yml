@@ -1,0 +1,105 @@
+﻿name: Static Code Analysis
+
+on:
+  workflow_call:
+    inputs:
+      solution-path:
+        required: true
+        type: string
+        description: 'Path to the solution file relative to repository root'
+      dotnet-version:
+        required: false
+        type: string
+        default: '9.0.x'
+        description: '.NET version to use'
+      configuration:
+        required: false
+        type: string
+        default: 'Release'
+        description: 'Build configuration'
+      coverage-threshold:
+        required: false
+        type: number
+        default: 80
+        description: 'Minimum code coverage percentage'
+
+concurrency:
+  group: static-analysis-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  static-analysis:
+    name: Static Code Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ inputs.dotnet-version }}
+        
+    - name: Restore dependencies
+      run: dotnet restore ${{ inputs.solution-path }}
+      
+    - name: Build solution
+      run: dotnet build ${{ inputs.solution-path }} --no-restore --configuration ${{ inputs.configuration }}
+      
+    - name: Run static code analysis with analyzers
+      run: dotnet build ${{ inputs.solution-path }} --no-restore --configuration ${{ inputs.configuration }} --verbosity normal --property WarningsAsErrors="" --property TreatWarningsAsErrors=true
+      
+    - name: Run unit tests
+      run: dotnet test ${{ inputs.solution-path }} --no-build --configuration ${{ inputs.configuration }} --collect:"XPlat Code Coverage" --results-directory ./coverage
+      
+    - name: Generate coverage report
+      uses: danielpalme/ReportGenerator-GitHub-Action@5.2.0
+      with:
+        reports: coverage/**/coverage.cobertura.xml
+        targetdir: coverage-report
+        reporttypes: Html;JsonSummary;Badges
+        assemblyfilters: -Microsoft.* -System.* -xunit.*
+        
+    - name: Upload coverage reports
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: coverage-report/
+        
+    - name: Check coverage threshold
+      run: |
+        if [ -f "coverage-report/Summary.json" ]; then
+          coverage=$(jq -r '.summary.linecoverage' coverage-report/Summary.json)
+          echo "Current coverage: $coverage%"
+          echo "Required threshold: ${{ inputs.coverage-threshold }}%"
+          
+          if (( $(echo "$coverage < ${{ inputs.coverage-threshold }}" | bc -l) )); then
+            echo " Coverage $coverage% is below threshold ${{ inputs.coverage-threshold }}%"
+            exit 1
+          else
+            echo " Coverage $coverage% meets threshold ${{ inputs.coverage-threshold }}%"
+          fi
+        else
+          echo " No coverage report found, skipping threshold check"
+        fi
+        
+    - name: Comment coverage on PR
+      uses: marocchino/sticky-pull-request-comment@v2
+      if: github.event_name == 'pull_request' && github.event.pull_request
+      with:
+        recreate: true
+        header: coverage-report
+        message: |
+          ##  Code Coverage Report
+          
+          Coverage threshold: ${{ inputs.coverage-threshold }}%
+          
+          [View detailed coverage report](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})

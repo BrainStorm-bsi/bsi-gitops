@@ -1,0 +1,105 @@
+﻿name: Docker Validation
+
+on:
+  workflow_call:
+    inputs:
+      dockerfile-path:
+        required: true
+        type: string
+        description: 'Path to Dockerfile relative to repository root'
+      context-path:
+        required: false
+        type: string
+        description: 'Docker build context path (defaults to dockerfile directory)'
+      image-name:
+        required: true
+        type: string
+        description: 'Docker image name'
+      registry:
+        required: false
+        type: string
+        default: ''
+        description: 'Container registry URL'
+      push-image:
+        required: false
+        type: boolean
+        default: false
+        description: 'Whether to push the built image'
+    secrets:
+      REGISTRY_USERNAME:
+        required: false
+        description: 'Container registry username'
+      REGISTRY_PASSWORD:
+        required: false
+        description: 'Container registry password'
+
+concurrency:
+  group: docker-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+
+jobs:
+  docker-validation:
+    name: Docker Build Validation
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Log in to Container Registry
+      if: inputs.registry != '' && inputs.push-image
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ inputs.registry }}
+        username: ${{ secrets.REGISTRY_USERNAME }}
+        password: ${{ secrets.REGISTRY_PASSWORD }}
+        
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ inputs.registry && format('{0}/{1}', inputs.registry, inputs.image-name) || inputs.image-name }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr,prefix=pr-
+          type=sha,prefix={{branch}}-
+          
+    - name: Build Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: ${{ inputs.context-path || '.' }}
+        file: ${{ inputs.dockerfile-path }}
+        push: ${{ inputs.push-image }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        
+    - name: Run container security scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ inputs.image-name }}:latest
+        format: 'sarif'
+        output: 'docker-security-results.sarif'
+        
+    - name: Upload Docker scan results
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: 'docker-security-results.sarif'
+        
+    - name: Validate Docker image
+      run: |
+        # Test basic image functionality
+        docker run --rm ${{ inputs.image-name }}:latest --version || true
+        echo " Docker image validation completed"

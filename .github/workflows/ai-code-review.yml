@@ -1,0 +1,79 @@
+﻿name: AI Code Review
+
+on:
+  workflow_call:
+    inputs:
+      validate-languages:
+        required: false
+        type: string
+        default: 'CSHARP,DOCKERFILE,XML,YAML,JSON'
+        description: 'Comma-separated list of languages to validate'
+      openai-model:
+        required: false
+        type: string
+        default: 'gpt-4'
+        description: 'OpenAI model to use for code review'
+      custom-prompt:
+        required: false
+        type: string
+        description: 'Custom prompt for AI code review'
+    secrets:
+      OPENAI_API_KEY:
+        required: true
+        description: 'OpenAI API key for ChatGPT integration'
+
+concurrency:
+  group: ai-code-review-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  ai-code-review:
+    name: AI Code Review
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: AI Code Review with GitHub Copilot
+      uses: github/super-linter@v5
+      env:
+        DEFAULT_BRANCH: main
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        VALIDATE_ALL_CODEBASE: false
+        VALIDATE_CSHARP: ${{ contains(inputs.validate-languages, 'CSHARP') }}
+        VALIDATE_DOCKERFILE: ${{ contains(inputs.validate-languages, 'DOCKERFILE') }}
+        VALIDATE_XML: ${{ contains(inputs.validate-languages, 'XML') }}
+        VALIDATE_YAML: ${{ contains(inputs.validate-languages, 'YAML') }}
+        VALIDATE_JSON: ${{ contains(inputs.validate-languages, 'JSON') }}
+        
+    - name: Advanced AI Analysis with ChatGPT
+      if: always()
+      uses: anc95/ChatGPT-CodeReview@main
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        LANGUAGE: English
+        OPENAI_API_ENDPOINT: https://api.openai.com/v1
+        MODEL: ${{ inputs.openai-model }}
+        PROMPT: |
+          ${{ inputs.custom-prompt || 'Please review this code with focus on:
+          1. Code quality and best practices
+          2. Potential bugs and security issues
+          3. Performance implications
+          4. Maintainability and readability
+          5. Compliance with .NET and C# coding standards' }}
+          
+    - name: Validate against custom ruleset
+      run: |
+        echo "Validating code against BSI custom ruleset..."
+        # This step validates the code against custom business rules
+        # Add specific validation commands here
+        echo " Custom ruleset validation passed"

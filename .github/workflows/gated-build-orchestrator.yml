@@ -1,0 +1,135 @@
+﻿name: Gated Build Orchestrator
+
+on:
+  workflow_call:
+    inputs:
+      required-checks:
+        required: false
+        type: string
+        default: 'Static Code Analysis,Security Analysis,AI Code Review,Docker Validation,Review Requirements Check'
+        description: 'Comma-separated list of required check names'
+      max-wait-minutes:
+        required: false
+        type: number
+        default: 15
+        description: 'Maximum time to wait for checks in minutes'
+      check-interval-seconds:
+        required: false
+        type: number
+        default: 30
+        description: 'Interval between status checks in seconds'
+
+concurrency:
+  group: gated-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+  statuses: write
+
+jobs:
+  wait-for-checks:
+    name: Wait for All Checks
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Wait for all required checks
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          const requiredChecks = '${{ inputs.required-checks }}'.split(',').map(s => s.trim());
+          
+          console.log('Waiting for all required checks to complete...');
+          console.log('Required checks:', requiredChecks);
+          
+          const maxAttempts = Math.ceil((${{ inputs.max-wait-minutes }} * 60) / ${{ inputs.check-interval-seconds }});
+          const delayMs = ${{ inputs.check-interval-seconds }} * 1000;
+          
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            console.log(`Attempt ${attempt}/${maxAttempts}: Checking status of required checks...`);
+            
+            const { data: checkRuns } = await github.rest.checks.listForRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.payload.pull_request.head.sha,
+            });
+            
+            const checkStatuses = {};
+            let allPassed = true;
+            let anyFailed = false;
+            
+            for (const checkName of requiredChecks) {
+              const check = checkRuns.check_runs.find(cr => cr.name === checkName);
+              if (!check) {
+                checkStatuses[checkName] = 'pending';
+                allPassed = false;
+              } else if (check.status !== 'completed') {
+                checkStatuses[checkName] = 'in_progress';
+                allPassed = false;
+              } else if (check.conclusion === 'success') {
+                checkStatuses[checkName] = 'success';
+              } else {
+                checkStatuses[checkName] = check.conclusion;
+                allPassed = false;
+                if (check.conclusion === 'failure') {
+                  anyFailed = true;
+                }
+              }
+            }
+            
+            console.log('Check statuses:', checkStatuses);
+            
+            if (anyFailed) {
+              core.setFailed(' One or more required checks have failed. Please fix the issues and try again.');
+              return;
+            }
+            
+            if (allPassed) {
+              console.log(' All required checks have passed!');
+              break;
+            }
+            
+            if (attempt < maxAttempts) {
+              console.log(`Waiting ${delayMs/1000} seconds before next check...`);
+              await new Promise(resolve => setTimeout(resolve, delayMs));
+            }
+          }
+          
+  gated-build-result:
+    name: Gated Build Result
+    runs-on: ubuntu-latest
+    needs: [wait-for-checks]
+    
+    steps:
+    - name: Report final status
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const conclusion = '${{ needs.wait-for-checks.result }}';
+          
+          if (conclusion === 'success') {
+            console.log(' All quality gates passed! This PR is ready for review and merge.');
+            
+            // Create a success comment
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `##  Gated Build Successful
+              
+              All quality gates have passed successfully:
+              -  Static Code Analysis
+              -  Security Analysis  
+              -  AI Code Review
+              -  Docker Validation
+              -  Review Enforcement
+              
+              This PR is ready for final review and merge! `
+            });
+          } else {
+            console.log(' Gated build failed. Please check individual workflows for details.');
+            core.setFailed('Gated build validation failed');
+          }
