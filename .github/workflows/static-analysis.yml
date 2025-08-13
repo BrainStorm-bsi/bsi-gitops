@@ -102,4 +102,4 @@ jobs:
           
           Coverage threshold: ${{ inputs.coverage-threshold }}%
           
-          [View detailed coverage report](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            [View detailed coverage report](https://github.com/skapura_bsinc/bsi-gitops/actions/runs/${{ github.run_id }})
